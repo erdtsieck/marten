@@ -16,6 +16,21 @@ internal class QuickEventAppender: IEventAppender
     {
         var storage = session.EventStorage();
 
+        // Queue AssertStreamVersion operations for streams with AlwaysEnforceConsistency but no events
+        foreach (var stream in session.WorkTracker.Streams.Where(x => !x.Events.Any() && x.AlwaysEnforceConsistency && x.ExpectedVersionOnServer.HasValue))
+        {
+            stream.TenantId ??= session.TenantId;
+
+            if (stream.Key != null)
+            {
+                session.QueueOperation(new AssertStreamVersionByKey(eventGraph, stream));
+            }
+            else
+            {
+                session.QueueOperation(new AssertStreamVersionById(eventGraph, stream));
+            }
+        }
+
         foreach (var stream in session.WorkTracker.Streams.Where(x => x.Events.Any()))
         {
             stream.TenantId ??= session.TenantId;
@@ -31,6 +46,9 @@ internal class QuickEventAppender: IEventAppender
                 {
                     session.QueueOperation(storage.QuickAppendEventWithVersion(stream, @event));
                 }
+
+                // Individual inserts don't use the function, so queue separate tag operations
+                EventTagOperations.QueueTagOperationsByEventId(eventGraph, session, stream);
             }
             else
             {
@@ -43,9 +61,13 @@ internal class QuickEventAppender: IEventAppender
                     {
                         session.QueueOperation(storage.QuickAppendEventWithVersion(stream, @event));
                     }
+
+                    // Individual inserts don't use the function, so queue separate tag operations
+                    EventTagOperations.QueueTagOperationsByEventId(eventGraph, session, stream);
                 }
                 else
                 {
+                    // Tags are handled inside the PostgreSQL function via array parameters
                     stream.PrepareEvents(0, eventGraph, sequences, session);
                     var quickAppendEvents = (QuickAppendEventsOperationBase)storage.QuickAppendEvents(stream);
                     quickAppendEvents.Events = eventGraph;

@@ -2,7 +2,9 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using JasperFx.Events.Aggregation;
 using JasperFx.Events.Daemon;
+using JasperFx.Events.Tags;
 using Marten.Events.Archiving;
 using Marten.Events.Projections;
 using Marten.Events.Schema;
@@ -65,11 +67,25 @@ public partial class EventGraph: IFeatureSchema
             foreach (var schemaObject in objects) yield return schemaObject;
         }
 
+        // Natural key tables for aggregates with NaturalKeyDefinition
+        foreach (var aggregate in Options.Projections.All.OfType<IAggregateProjection>())
+        {
+            if (aggregate.NaturalKeyDefinition != null)
+            {
+                yield return new NaturalKeyTable(this, aggregate.NaturalKeyDefinition);
+            }
+        }
+
         if (EnableAdvancedAsyncTracking)
         {
             yield return new EventProgressionSkippingTable(this);
             yield return new SystemFunction(DatabaseSchemaName, "mt_mark_progression_with_skip",
                 "varchar, bigint, bigint");
+        }
+
+        foreach (var tagRegistration in _tagTypes)
+        {
+            yield return new EventTagTable(this, tagRegistration);
         }
     }
 }
