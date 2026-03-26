@@ -217,10 +217,59 @@ public void using_take_and_skip(IDocumentSession session)
 
 TODO -- link to the paging support
 
-## Grouping Operators
+## GroupBy()
 
-Sorry, but Marten does not yet support `GroupBy()`. You can track [this GitHub issue](https://github.com/JasperFx/marten/issues/569) to follow
-any future work on this Linq operator.
+Marten supports the `GroupBy()` LINQ operator for grouping documents by one or more keys and computing aggregate values. GroupBy translates to SQL `GROUP BY` with aggregate functions like `COUNT`, `SUM`, `MIN`, `MAX`, and `AVG`.
+
+### Simple Key with Aggregates
+
+<!-- snippet: sample_group_by_simple_key_with_count -->
+<!-- endSnippet -->
+
+### Composite Key
+
+You can group by multiple properties using an anonymous type:
+
+```csharp
+var results = await session.Query<Target>()
+    .GroupBy(x => new { x.Color, x.String })
+    .Select(g => new { Color = g.Key.Color, Text = g.Key.String, Count = g.Count() })
+    .ToListAsync();
+```
+
+### Where Before GroupBy
+
+Filter documents before grouping with a standard `Where()` clause:
+
+```csharp
+var results = await session.Query<Target>()
+    .Where(x => x.Number > 20)
+    .GroupBy(x => x.Color)
+    .Select(g => new { Color = g.Key, Count = g.Count() })
+    .ToListAsync();
+```
+
+### HAVING (Where After GroupBy)
+
+Filter groups with a `Where()` clause after `GroupBy()` -- this translates to SQL `HAVING`:
+
+```csharp
+var results = await session.Query<Target>()
+    .GroupBy(x => x.Color)
+    .Where(g => g.Count() > 1)
+    .Select(g => new { Color = g.Key, Count = g.Count() })
+    .ToListAsync();
+```
+
+### Supported Aggregates
+
+The following aggregate methods are supported within GroupBy projections:
+
+- `g.Count()` / `g.LongCount()` -- `COUNT(*)`
+- `g.Sum(x => x.Property)` -- `SUM(property)`
+- `g.Min(x => x.Property)` -- `MIN(property)`
+- `g.Max(x => x.Property)` -- `MAX(property)`
+- `g.Average(x => x.Property)` -- `AVG(property)`
 
 ## Distinct()
 
@@ -246,7 +295,7 @@ public async Task get_distinct_string()
     queryable.ToList().Count.ShouldBe(3);
 }
 ```
-<sup><a href='https://github.com/JasperFx/marten/blob/master/src/LinqTests/Operators/distinct_operator.cs#L56-L74' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_get_distinct_strings' title='Start of snippet'>anchor</a></sup>
+<sup><a href='https://github.com/JasperFx/marten/blob/master/src/LinqTests/Operators/distinct_operator.cs#L53-L71' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_get_distinct_strings' title='Start of snippet'>anchor</a></sup>
 <!-- endSnippet -->
 
 Do note that the `Distinct()` keyword can be used with `Select()` transforms as well:
@@ -275,7 +324,7 @@ public async Task get_distinct_numbers()
     queryable.ToList().Count.ShouldBe(4);
 }
 ```
-<sup><a href='https://github.com/JasperFx/marten/blob/master/src/LinqTests/Operators/distinct_operator.cs#L33-L54' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_get_distinct_numbers' title='Start of snippet'>anchor</a></sup>
+<sup><a href='https://github.com/JasperFx/marten/blob/master/src/LinqTests/Operators/distinct_operator.cs#L30-L51' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_get_distinct_numbers' title='Start of snippet'>anchor</a></sup>
 <!-- endSnippet -->
 
 ## Modulo Queries

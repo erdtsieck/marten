@@ -7,22 +7,38 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using JasperFx.Events;
+using JasperFx.Events.Projections;
 using JasperFx.Events.Tags;
 using Marten.Events.Dcb;
 using Marten.Internal.Sessions;
+using Marten.Storage;
 using Npgsql;
 
 namespace Marten.Events;
 
 internal partial class EventStore
 {
+    public async Task<bool> EventsExistAsync(EventTagQuery query, CancellationToken cancellation = default)
+    {
+        await _session.Database.EnsureStorageExistsAsync(typeof(IEvent), cancellation).ConfigureAwait(false);
+
+        var handler = new EventsExistByTagsHandler(_store, query);
+        return await _session.ExecuteHandlerAsync(handler, cancellation).ConfigureAwait(false);
+    }
+
     public async Task<IReadOnlyList<IEvent>> QueryByTagsAsync(EventTagQuery query,
         CancellationToken cancellation = default)
+    {
+        return await QueryByTagsAsync(query, null, cancellation).ConfigureAwait(false);
+    }
+
+    private async Task<IReadOnlyList<IEvent>> QueryByTagsAsync(EventTagQuery query,
+        string[]? aggregatorEventTypeNames, CancellationToken cancellation)
     {
         await _session.Database.EnsureStorageExistsAsync(typeof(IEvent), cancellation).ConfigureAwait(false);
 
         var storage = (EventDocumentStorage)_session.EventStorage();
-        var (sql, paramValues) = BuildTagQuerySql(query, storage.SelectFields());
+        var (sql, paramValues) = BuildTagQuerySql(query, storage.SelectFields(), aggregatorEventTypeNames);
         var cmd = new NpgsqlCommand(sql);
         for (var i = 0; i < paramValues.Count; i++)
         {
@@ -45,7 +61,8 @@ internal partial class EventStore
     public async Task<IEventBoundary<T>> FetchForWritingByTags<T>(EventTagQuery query,
         CancellationToken cancellation = default) where T : class
     {
-        var events = await QueryByTagsAsync(query, cancellation).ConfigureAwait(false);
+        var eventTypeNames = ResolveAggregatorEventTypeNames<T>();
+        var events = await QueryByTagsAsync(query, eventTypeNames, cancellation).ConfigureAwait(false);
         var lastSeenSequence = events.Count > 0 ? events.Max(e => e.Sequence) : 0;
 
         T? aggregate = default;
@@ -90,7 +107,8 @@ internal partial class EventStore
         return events;
     }
 
-    private (string sql, List<object> parameters) BuildTagQuerySql(EventTagQuery query, string[] selectFields)
+    private (string sql, List<object> parameters) BuildTagQuerySql(EventTagQuery query, string[] selectFields,
+        string[]? aggregatorEventTypeNames = null)
     {
         var conditions = query.Conditions;
         if (conditions.Count == 0)
@@ -166,8 +184,42 @@ internal partial class EventStore
             sb.Append(')');
         }
 
-        sb.Append(") order by e.seq_id");
+        sb.Append(')');
+
+        // Filter by tenant_id for conjoined tenancy
+        if (_store.Events.TenancyStyle == TenancyStyle.Conjoined)
+        {
+            sb.Append(" and e.tenant_id = @p");
+            sb.Append(paramValues.Count);
+            paramValues.Add(_session.TenantId);
+        }
+
+        // If the aggregator has event type filtering, apply it to limit the returned events
+        if (aggregatorEventTypeNames is { Length: > 0 })
+        {
+            sb.Append(" and e.type = ANY(@p");
+            sb.Append(paramValues.Count);
+            sb.Append(')');
+            paramValues.Add(aggregatorEventTypeNames);
+        }
+
+        sb.Append(" order by e.seq_id");
 
         return (sb.ToString(), paramValues);
+    }
+
+    private string[]? ResolveAggregatorEventTypeNames<T>() where T : class
+    {
+        var aggregator = _store.Options.Projections.AggregatorFor<T>();
+        if (aggregator is not EventFilterable filterable) return null;
+
+        var includedTypes = filterable.IncludedEventTypes;
+        if (includedTypes.Count == 0 || includedTypes.Any(x => x.IsAbstract || x.IsInterface)) return null;
+
+        var additionalAliases = _store.Events.AliasesForEvents(includedTypes);
+        return includedTypes
+            .Select(x => _store.Events.EventMappingFor(x).Alias)
+            .Union(additionalAliases)
+            .ToArray();
     }
 }

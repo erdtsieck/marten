@@ -200,6 +200,12 @@ public partial class EventGraph: EventRegistry, IEventStoreOptions, IReadOnlyEve
     public bool UseMonitoredAdvisoryLock { get; set; } = true;
     public bool EnableAdvancedAsyncTracking { get; set; }
     public bool EnableEventSkippingInProjectionsOrSubscriptions { get; set; }
+
+    /// <summary>
+    /// When enabled, adds heartbeat, agent_status, pause_reason, and running_on_node
+    /// columns to the event progression table for CritterWatch monitoring
+    /// </summary>
+    public bool EnableExtendedProgressionTracking { get; set; }
     public bool UseArchivedStreamPartitioning { get; set; }
     public IMessageOutbox MessageOutbox { get; set; } = new NulloMessageOutbox();
 
@@ -472,6 +478,11 @@ public partial class EventGraph: EventRegistry, IEventStoreOptions, IReadOnlyEve
         return _byEventName[eventType];
     }
 
+    internal EventMapping? TryGetRegisteredMappingForDotNetTypeName(string dotnetTypeName)
+    {
+        return AllEvents().FirstOrDefault(x => x.DotNetTypeName == dotnetTypeName);
+    }
+
     // Fetch additional event aliases that map to these types
     internal IReadOnlySet<string> AliasesForEvents(IReadOnlyCollection<Type> types)
     {
@@ -569,6 +580,38 @@ public partial class EventGraph: EventRegistry, IEventStoreOptions, IReadOnlyEve
         foreach (var mapping in _events)
         {
             mapping.JsonTransformation(null);
+        }
+
+        autoDiscoverTagTypesFromProjections();
+    }
+
+    private static readonly HashSet<Type> PrimitiveIdentityTypes =
+    [
+        typeof(Guid), typeof(string), typeof(int), typeof(long), typeof(short)
+    ];
+
+    private static readonly System.Reflection.MethodInfo CreateTagTypeMethod =
+        typeof(TagTypeRegistration).GetMethod(nameof(TagTypeRegistration.Create))!;
+
+    private void autoDiscoverTagTypesFromProjections()
+    {
+        foreach (var projection in Options.Projections.All.OfType<IAggregateProjection>())
+        {
+            var identityType = projection.IdentityType;
+            if (identityType == null || PrimitiveIdentityTypes.Contains(identityType)) continue;
+            if (_tagTypes.Any(t => t.TagType == identityType)) continue;
+
+            try
+            {
+                var generic = CreateTagTypeMethod.MakeGenericMethod(identityType);
+                var registration = (ITagTypeRegistration)generic.Invoke(null, [null])!;
+                registration.ForAggregate(projection.AggregateType);
+                _tagTypes.Add(registration);
+            }
+            catch
+            {
+                // Not a valid strong-typed identifier — skip silently
+            }
         }
     }
 
