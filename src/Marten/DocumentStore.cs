@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Transactions;
@@ -11,12 +12,14 @@ using JasperFx.Core;
 using JasperFx.Core.Reflection;
 using JasperFx.Descriptors;
 using JasperFx.Events;
+using JasperFx.Events.Aggregation;
 using JasperFx.Events.Daemon;
 using JasperFx.Events.Descriptors;
 using JasperFx.Events.Projections;
 using JasperFx.MultiTenancy;
 using Marten.Events;
 using Marten.Events.Daemon;
+using Marten.Events.Projections;
 using Marten.Events.Daemon.HighWater;
 using Marten.Exceptions;
 using Marten.Internal.Sessions;
@@ -62,6 +65,7 @@ public partial class DocumentStore: IDocumentStore, IDescribeMyself
         StorageFeatures.PostProcessConfiguration();
         Events.Initialize(this);
         Options.Projections.DiscoverGeneratedEvolvers(AppDomain.CurrentDomain.GetAssemblies());
+        DiscoverNaturalKeyAggregates(AppDomain.CurrentDomain.GetAssemblies());
         Options.Projections.AssertValidity(Options);
 
         if (Options.LogFactory != null)
@@ -163,6 +167,65 @@ public partial class DocumentStore: IDocumentStore, IDescribeMyself
             new BulkInsertion(
                 await Tenancy.GetTenantAsync(Options.TenantIdStyle.MaybeCorrectTenantId(tenantId)).ConfigureAwait(false), Options);
         await bulkInsertion.BulkInsertDocumentsAsync(documents, mode, batchSize, cancellation).ConfigureAwait(false);
+    }
+
+    public async Task BulkInsertEventsAsync(IReadOnlyList<StreamAction> streams, int batchSize = 1000,
+        CancellationToken cancellation = default)
+    {
+        await Storage.ApplyAllConfiguredChangesToDatabaseAsync().ConfigureAwait(false);
+
+        var tenant = Tenancy.Default;
+        var appender = new BulkEventAppender(Events, Options.Serializer());
+
+        await using var conn = tenant.Database.CreateConnection();
+        await conn.OpenAsync(cancellation).ConfigureAwait(false);
+        var tx = await conn.BeginTransactionAsync(cancellation).ConfigureAwait(false);
+
+        try
+        {
+            await appender.BulkInsertAsync(conn, streams, batchSize, cancellation).ConfigureAwait(false);
+            await tx.CommitAsync(cancellation).ConfigureAwait(false);
+        }
+        catch
+        {
+            await tx.RollbackAsync(cancellation).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    public async Task BulkInsertEventsAsync(string tenantId, IReadOnlyList<StreamAction> streams,
+        int batchSize = 1000, CancellationToken cancellation = default)
+    {
+        await Storage.ApplyAllConfiguredChangesToDatabaseAsync().ConfigureAwait(false);
+
+        var tenant = await Tenancy.GetTenantAsync(Options.TenantIdStyle.MaybeCorrectTenantId(tenantId))
+            .ConfigureAwait(false);
+        var appender = new BulkEventAppender(Events, Options.Serializer());
+
+        // Set tenant on all streams
+        foreach (var stream in streams)
+        {
+            stream.TenantId = tenantId;
+            foreach (var e in stream.Events)
+            {
+                e.TenantId = tenantId;
+            }
+        }
+
+        await using var conn = tenant.Database.CreateConnection();
+        await conn.OpenAsync(cancellation).ConfigureAwait(false);
+        var tx = await conn.BeginTransactionAsync(cancellation).ConfigureAwait(false);
+
+        try
+        {
+            await appender.BulkInsertAsync(conn, streams, batchSize, cancellation).ConfigureAwait(false);
+            await tx.CommitAsync(cancellation).ConfigureAwait(false);
+        }
+        catch
+        {
+            await tx.RollbackAsync(cancellation).ConfigureAwait(false);
+            throw;
+        }
     }
 
     public IDiagnostics Diagnostics { get; }
@@ -469,6 +532,43 @@ public partial class DocumentStore: IDocumentStore, IDescribeMyself
         var detector = new HighWaterDetector((MartenDatabase)database, Events, logger);
 
         return new ProjectionDaemon(this, (MartenDatabase)database, logger, detector);
+    }
+
+    /// <summary>
+    /// Scan loaded assemblies for types marked with [NaturalKeyAggregate] by the source generator
+    /// and auto-register Inline snapshot projections for any that don't already have a projection.
+    /// </summary>
+    private void DiscoverNaturalKeyAggregates(Assembly[] assemblies)
+    {
+        foreach (var assembly in assemblies)
+        {
+            IEnumerable<NaturalKeyAggregateAttribute> attrs;
+            try
+            {
+                attrs = assembly.GetCustomAttributes<NaturalKeyAggregateAttribute>();
+            }
+            catch
+            {
+                continue;
+            }
+
+            foreach (var attr in attrs)
+            {
+                if (!Options.Projections.TryFindAggregate(attr.AggregateType, out _))
+                {
+                    // Register Inline snapshot via reflection — this activates the full natural key pipeline:
+                    // NaturalKeyDefinition discovery, NaturalKeyTable creation, NaturalKeyProjection
+                    var snapshotMethod = typeof(ProjectionOptions)
+                        .GetMethods()
+                        .First(m => m.Name == "Snapshot" && m.IsGenericMethod &&
+                                    m.GetParameters().Length == 2 &&
+                                    m.GetParameters()[0].ParameterType == typeof(SnapshotLifecycle));
+
+                    snapshotMethod.MakeGenericMethod(attr.AggregateType)
+                        .Invoke(Options.Projections, new object?[] { SnapshotLifecycle.Inline, null });
+                }
+            }
+        }
     }
 
     /// <summary>
