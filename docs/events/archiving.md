@@ -136,7 +136,7 @@ both `Inline` and `Async` execution of projections.
 Let's try to make this concrete by building a simple order processing system that might include this
 aggregate:
 
-<!-- snippet: sample_Order_for_optimized_command_handling -->
+<!-- snippet: sample_order_for_optimized_command_handling -->
 <a id='snippet-sample_order_for_optimized_command_handling'></a>
 ```cs
 public class Item
@@ -181,7 +181,7 @@ public class Order
 Next, let's say we're having the `Order` aggregate snapshotted so that it's updated every time new events 
 are captured like so:
 
-<!-- snippet: sample_registering_Order_as_Inline -->
+<!-- snippet: sample_registering_order_as_inline -->
 <a id='snippet-sample_registering_order_as_inline'></a>
 ```cs
 var builder = Host.CreateApplicationBuilder();
@@ -253,3 +253,31 @@ If you rely on asynchronous multi-stream projections and need all events to be p
 
 This ensures all prior events are fully projected before the stream is marked as archived.
 :::
+
+### Archived in Composite Projections <Badge type="tip" text="8.x" />
+
+When multiple single-stream projections run inside the same
+[composite projection](/events/projections/composite), every child projection
+processes every slice in the batch. An `Archived` event raised on one child's
+stream is therefore *seen* by every sibling. To avoid redundant stream-archival
+operations, the `mt_archive_stream` call is only issued from the child that
+actually **owns** the stream — measured by whether the child has a snapshot for
+that stream id (either loaded before the slice was applied, or materialized by
+the slice itself). Siblings that did not materialize anything skip the archive.
+
+::: tip
+Archiving a stream and deleting the projected document are **independent**
+operations. Marten does not delete projected documents as a side effect of an
+`Archived` event — that's a common and legitimate pattern: keep the read model
+around for historical queries while the underlying event stream moves out of
+the hot table. If you *do* want the document removed when the stream is
+archived, either call `session.Delete<T>(id)` explicitly (see the earlier tip)
+or register the deletion in your projection's `Apply(Archived, current)`
+method by returning `null` (or otherwise opting in).
+:::
+
+Whether a projection's `Create(Archived)` or `Apply(Archived, current)` method
+runs is entirely governed by the user-defined handlers on that projection —
+`Archived` is just an event and receives no special treatment at the
+`EvolveAsync` level. The ownership guard described above only scopes the
+stream-archival side effect.

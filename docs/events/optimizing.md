@@ -138,6 +138,88 @@ so that updates from new events can be directly applied to the in memory documen
 load those documents over and over again from the database as new events trickle in. This is of course much more effective
 when your projection is constantly updating a relatively small number of different aggregates.
 
+## Event Type Index for Projection Rebuilds <Badge type="tip" text="8.29" />
+
+If you have projections that filter on a small subset of event types and your event store has
+large volumes of other event types, projection rebuilds can become very slow. The daemon's query
+scans through ranges of events sequentially, and when matching events are sparse, most of the
+scan is wasted.
+
+Enable the event type index to add a composite index on `(type, seq_id)`:
+
+```cs
+opts.Events.EnableEventTypeIndex = true;
+```
+
+This creates:
+```sql
+CREATE INDEX idx_mt_events_event_type_seq_id ON mt_events (type, seq_id);
+```
+
+The index allows PostgreSQL to jump directly to matching event types within a sequence range,
+turning projection rebuilds from O(N) full scans into O(log N) index lookups.
+
+::: warning
+This index adds storage overhead and slightly increases write latency on every event append.
+Only enable it if you experience slow projection rebuilds with type-filtered projections.
+:::
+
+Even without the index, the async daemon automatically adapts when event loading times out.
+It will fall back to progressively simpler query strategies:
+
+1. **Normal**: Standard range query with type filter
+2. **Skip-ahead**: Find the MIN(seq_id) matching the type filter, then fetch from there
+3. **Window-step**: Advance through the sequence in fixed 10,000-event windows
+
+This adaptive behavior is automatic and requires no configuration.
+
+### When to Enable the Event Type Index
+
+Consider enabling `EnableEventTypeIndex` if you observe any of these symptoms:
+
+* **Projection rebuilds time out** — especially for projections that use `IncludeType<T>()` or
+  only handle a small subset of your total event types
+* **New async projections take a long time to catch up** — when deployed against an existing
+  event store with millions of events and the projection only cares about a few event types
+* **Blue/green deployments are slow** — the new projection version needs to rebuild from scratch
+  and the event type distribution is uneven
+
+You generally do **not** need this index if:
+
+* Your event store is small (under a few million events)
+* Your projections consume most or all event types
+* You only use inline projections (no async daemon)
+
+### Diagnosing Slow Projection Rebuilds
+
+When the adaptive event loader falls back to a slower strategy, it logs a warning:
+
+```text
+Event loading timed out with Normal strategy for range [X, Y].
+Falling back to SkipAhead. Consider enabling opts.Events.EnableEventTypeIndex
+for better performance.
+```
+
+If you see these messages in your logs, enable the event type index and the warnings
+will stop — the index eliminates the need for the fallback strategies entirely.
+
+### Tuning Batch Size
+
+The default batch size for the async daemon is 500 events per fetch. If you are
+experiencing timeouts during projection rebuilds **and** cannot add the event type index,
+you can reduce the batch size as a workaround:
+
+```cs
+opts.Projections.Snapshot<MyAggregate>(SnapshotLifecycle.Async, asyncOptions =>
+{
+    asyncOptions.BatchSize = 100;
+});
+```
+
+A smaller batch size means smaller sequence ranges per query, reducing the chance of
+scanning through large stretches of non-matching events. The trade-off is more round
+trips to the database.
+
 ## Keeping the Database Smaller
 
 One great way to maintain performance over time as a system database grows is to simply keep a lid on how big the **active**
@@ -145,3 +227,27 @@ data set is in your Marten database. To that end, you have a pair of complementa
 
 * [Event Archiving](/events/archiving)
 * [Stream Compacting](/events/compacting)
+
+## Distributed Async Projections with Wolverine
+
+By default, async projection and subscription processing is coordinated across your application cluster using
+Marten's built-in "Hot/Cold" leader election. An alternative is to use Wolverine's more sophisticated agent
+distribution to spread projection work across all nodes in your application cluster:
+
+```cs
+builder.Services.AddMarten(opts =>
+{
+    // your configuration...
+})
+.IntegrateWithWolverine(opts =>
+{
+    opts.UseWolverineManagedEventSubscriptionDistribution = true;
+});
+```
+
+This eliminates single-node bottlenecks in multi-instance deployments by distributing projection shards
+across available nodes rather than centralizing all processing on the elected leader. See the
+[Wolverine integration documentation](https://wolverinefx.net/guide/durability/marten/event-sourcing.html)
+for more details.
+
+For more on this topic, see [Wolverine-managed distribution](https://jeremydmiller.com/2025/06/02/making-event-sourcing-with-marten-go-faster/).

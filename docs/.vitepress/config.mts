@@ -8,6 +8,7 @@ const config: UserConfig<DefaultTheme.Config> = {
   base: '/',
   lang: 'en-US',
   title: 'Marten',
+  titleTemplate: ':title | Marten - .NET Document DB & Event Store',
   description: '.NET Transactional Document DB and Event Store on PostgreSQL',
   head: [
     ['link', { rel: 'apple-touch-icon', type: 'image/png', size: "180x180", href: '/apple-touch-icon.png' }],
@@ -22,8 +23,29 @@ const config: UserConfig<DefaultTheme.Config> = {
     ['meta', { property: 'twitter:card', content: 'summary_large_image' }],
     ['meta', { property: 'twitter:site', content: 'marten_lib' }],
     ['meta', { property: 'twitter:creator', content: 'marten_lib' }],
-    ['meta', { property: 'twitter:image', content: 'https://martendb.io/social.png' }]
+    ['meta', { property: 'twitter:image', content: 'https://martendb.io/social.png' }],
+    // JSON-LD structured data for search engines
+    ['script', { type: 'application/ld+json' }, JSON.stringify({
+      '@context': 'https://schema.org',
+      '@type': 'SoftwareSourceCode',
+      'name': 'Marten',
+      'description': '.NET Transactional Document DB and Event Store on PostgreSQL',
+      'url': 'https://martendb.io',
+      'codeRepository': 'https://github.com/JasperFx/marten',
+      'programmingLanguage': 'C#',
+      'runtimePlatform': '.NET',
+      'license': 'https://opensource.org/licenses/MIT',
+      'author': {
+        '@type': 'Organization',
+        'name': 'JasperFx Software',
+        'url': 'https://www.jasperfx.net'
+      }
+    })]
   ],
+
+  sitemap: {
+    hostname: 'https://martendb.io'
+  },
 
   lastUpdated: true,
 
@@ -113,6 +135,7 @@ const config: UserConfig<DefaultTheme.Config> = {
             { text: 'Opening Sessions', link: '/documents/sessions' },
             { text: 'Storing Documents', link: '/documents/storing' },
             { text: 'Deleting Documents', link: '/documents/deletes' },
+            { text: 'PostgreSQL Sequences', link: '/documents/sequences' },
             {
               text: 'Querying Documents', link: '/documents/querying/', collapsed: true, items: [
                 { text: 'Loading Documents by Id', link: '/documents/querying/byid' },
@@ -202,6 +225,8 @@ const config: UserConfig<DefaultTheme.Config> = {
                 { text: 'Rebuilding Projections', link: '/events/projections/rebuilding' },
                 { text: 'EF Core Projections', link: '/events/projections/efcore' },
                 { text: 'Projections and IoC Services', link: '/events/projections/ioc' },
+                { text: 'Ancillary Stores in Projections', link: '/events/projections/ancillary-stores' },
+                { text: 'ProjectLatest — Include Pending Events', link: '/events/projections/project-latest' },
                 { text: 'Async Daemon HealthChecks', link: '/events/projections/healthchecks' },]
             },
             {
@@ -370,6 +395,10 @@ const config: UserConfig<DefaultTheme.Config> = {
             {
               text: 'Working with dates',
               link: '/postgres/dates'
+            },
+            {
+              text: 'Read Replicas',
+              link: '/postgres/read-replicas'
             },
             // {
             //   text: 'Backup and restore',

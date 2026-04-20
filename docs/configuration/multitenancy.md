@@ -1,3 +1,7 @@
+---
+description: Configure multi-tenancy in Marten with database-per-tenant, conjoined tenancy, sharded databases, master table routing, and dynamic tenant provisioning.
+---
+
 # Multi-Tenancy with Database per Tenant
 
 Marten has support for two types of multi-tenanted storage and data retrieval, [conjoined multi-tenancy](/documents/multi-tenancy) where
@@ -474,7 +478,7 @@ It is strongly recommended that you first refer to the existing Marten options f
 
 The multi-tenancy strategy is pluggable. Start by implementing the `Marten.Storage.ITenancy` interface:
 
-<!-- snippet: sample_ITenancy -->
+<!-- snippet: sample_itenancy -->
 <a id='snippet-sample_itenancy'></a>
 ```cs
 /// <summary>
@@ -537,7 +541,7 @@ public interface ITenancy: IDatabaseSource, IDisposable, IDatabaseUser
 
 Assuming that we have a custom `ITenancy` model:
 
-<!-- snippet: sample_MySpecialTenancy -->
+<!-- snippet: sample_myspecialtenancy -->
 <a id='snippet-sample_myspecialtenancy'></a>
 ```cs
 // Make sure you implement the Dispose() method and

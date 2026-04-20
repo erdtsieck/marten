@@ -64,6 +64,20 @@ namespace Marten.Events
         /// </summary>
         public bool EnableUniqueIndexOnEventId { get; set; }
 
+        /// <summary>
+        /// Opt into adding a composite index on (type, seq_id) to the mt_events table.
+        /// This can dramatically improve performance for projection rebuilds and async
+        /// projections that filter on a small subset of event types.
+        /// </summary>
+        public bool EnableEventTypeIndex { get; set; }
+
+        /// <summary>
+        /// Opt into using bigint (64-bit) types for event version, sequence, and return
+        /// values in PostgreSQL functions. Prevents integer overflow when sequence values
+        /// exceed int32 range. Default is false. Will become true in Marten 9.0.
+        /// </summary>
+        public bool EnableBigIntEvents { get; set; }
+
         public EventAppendMode AppendMode { get; set; }
 
         /// <summary>

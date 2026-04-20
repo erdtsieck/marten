@@ -1,3 +1,7 @@
+---
+description: Append events to streams in Marten's event store. Covers starting streams, appending to existing streams, Rich vs Quick append modes, and optimistic concurrency.
+---
+
 # Appending Events
 
 ::: tip
@@ -158,7 +162,7 @@ is present in the database:
 
 To make the stream type markers mandatory, you can use this flag in the configuration:
 
-<!-- snippet: sample_UseMandatoryStreamTypeDeclaration -->
+<!-- snippet: sample_usemandatorystreamtypedeclaration -->
 <a id='snippet-sample_usemandatorystreamtypedeclaration'></a>
 ```cs
 var builder = Host.CreateApplicationBuilder();
@@ -249,7 +253,7 @@ perfectly safe to delete tombstone events from your database:
 * Where the `seq_id` column value is less than the "high water mark" of the async daemon. You can find the "high water mark"
   value from the `mt_event_progression` table or through this API call:
 
-<!-- snippet: sample_DaemonDiagnostics -->
+<!-- snippet: sample_daemondiagnostics -->
 <a id='snippet-sample_daemondiagnostics'></a>
 ```cs
 public static async Task ShowDaemonDiagnostics(IDocumentStore store)

@@ -27,7 +27,6 @@ using Marten.Services;
 using Marten.Storage;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.FSharp.Control;
 using Weasel.Postgresql.Connections;
 using IsolationLevel = System.Data.IsolationLevel;
 
@@ -65,7 +64,10 @@ public partial class DocumentStore: IDocumentStore, IDescribeMyself
         StorageFeatures.PostProcessConfiguration();
         Events.Initialize(this);
         Options.Projections.DiscoverGeneratedEvolvers(AppDomain.CurrentDomain.GetAssemblies());
-        DiscoverNaturalKeyAggregates(AppDomain.CurrentDomain.GetAssemblies());
+        // Note: Natural key aggregates are discovered lazily when FetchForWriting
+        // is called with a type that has [NaturalKey]. Assembly-level scanning was
+        // removed because it caused spurious InvalidProjectionException failures
+        // when test projects share compile references with incompatible stream identity types.
         Options.Projections.AssertValidity(Options);
 
         if (Options.LogFactory != null)
@@ -602,7 +604,7 @@ public partial class DocumentStore: IDocumentStore, IDescribeMyself
     /// <param name="configure"></param>
     /// <returns></returns>
 
-    #region sample_DocumentStore.For
+    #region sample_documentstore.For
 
     public static DocumentStore For(Action<StoreOptions> configure)
     {

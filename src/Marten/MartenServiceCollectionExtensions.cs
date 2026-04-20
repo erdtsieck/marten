@@ -313,6 +313,7 @@ public static class MartenServiceCollectionExtensions
         stores.Add(config);
 
         services.AddSingleton<T>(s => config.Build(s));
+        services.AddSingleton<Lazy<T>>(s => new Lazy<T>(() => s.GetRequiredService<T>()));
 
         // Default keyed session factory for the ancillary store
         services.AddKeyedSingleton<ISessionFactory>(typeof(T), (sp, _) =>
@@ -941,7 +942,7 @@ public static class MartenServiceCollectionExtensions
 
 public interface IGlobalConfigureMarten: IConfigureMarten;
 
-#region sample_IConfigureMarten
+#region sample_iconfiguremarten
 
 /// <summary>
 ///     Mechanism to register additional Marten configuration that is applied after AddMarten()
@@ -954,7 +955,7 @@ public interface IConfigureMarten
 
 #endregion
 
-#region sample_IAsyncConfigureMarten
+#region sample_iasyncconfiguremarten
 
 /// <summary>
 ///     Mechanism to register additional Marten configuration that is applied after AddMarten()

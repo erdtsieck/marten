@@ -400,7 +400,7 @@ public record ShippingLabelCreated(string ExternalAccountId): IExternalAccountEv
 
 public record TrackingItemSeen(string ExternalAccountId, string Mode): IExternalAccountEvent;
 ```
-<sup><a href='https://github.com/JasperFx/marten/blob/master/src/EventSourcingTests/Projections/MultiStreamProjections/CustomGroupers/grouping_examples_for_unknown_ids.cs#L18-L33' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_external-account-link-events' title='Start of snippet'>anchor</a></sup>
+<sup><a href='https://github.com/JasperFx/marten/blob/master/src/EventSourcingTests/Projections/MultiStreamProjections/CustomGroupers/grouping_examples_for_unknown_ids.cs#L19-L34' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_external-account-link-events' title='Start of snippet'>anchor</a></sup>
 <!-- endSnippet -->
 
 Lookup document projected per external account:
@@ -423,7 +423,7 @@ public class ExternalAccountLinkProjection: SingleStreamProjection<ExternalAccou
     }
 }
 ```
-<sup><a href='https://github.com/JasperFx/marten/blob/master/src/EventSourcingTests/Projections/MultiStreamProjections/CustomGroupers/grouping_examples_for_unknown_ids.cs#L35-L52' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_external-account-link' title='Start of snippet'>anchor</a></sup>
+<sup><a href='https://github.com/JasperFx/marten/blob/master/src/EventSourcingTests/Projections/MultiStreamProjections/CustomGroupers/grouping_examples_for_unknown_ids.cs#L36-L53' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_external-account-link' title='Start of snippet'>anchor</a></sup>
 <!-- endSnippet -->
 
 Custom grouper that resolves `CustomerId` in bulk per event range:
@@ -463,7 +463,7 @@ public class ExternalAccountToCustomerGrouper: IAggregateGrouper<Guid>
     }
 }
 ```
-<sup><a href='https://github.com/JasperFx/marten/blob/master/src/EventSourcingTests/Projections/MultiStreamProjections/CustomGroupers/grouping_examples_for_unknown_ids.cs#L54-L88' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_external-account-link-grouper' title='Start of snippet'>anchor</a></sup>
+<sup><a href='https://github.com/JasperFx/marten/blob/master/src/EventSourcingTests/Projections/MultiStreamProjections/CustomGroupers/grouping_examples_for_unknown_ids.cs#L55-L89' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_external-account-link-grouper' title='Start of snippet'>anchor</a></sup>
 <!-- endSnippet -->
 
 The multi stream projection stays focused on applying events:
@@ -501,7 +501,7 @@ public class CustomerBillingProjection: MultiStreamProjection<CustomerBillingMet
     }
 }
 ```
-<sup><a href='https://github.com/JasperFx/marten/blob/master/src/EventSourcingTests/Projections/MultiStreamProjections/CustomGroupers/grouping_examples_for_unknown_ids.cs#L90-L122' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_external-account-link-multi-stream-projection' title='Start of snippet'>anchor</a></sup>
+<sup><a href='https://github.com/JasperFx/marten/blob/master/src/EventSourcingTests/Projections/MultiStreamProjections/CustomGroupers/grouping_examples_for_unknown_ids.cs#L91-L123' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_external-account-link-multi-stream-projection' title='Start of snippet'>anchor</a></sup>
 <!-- endSnippet -->
 
 Registration:
@@ -512,21 +512,45 @@ Registration:
 opts.Projections.Add<ExternalAccountLinkProjection>(ProjectionLifecycle.Inline);
 opts.Projections.Add<CustomerBillingProjection>(ProjectionLifecycle.Async);
 ```
-<sup><a href='https://github.com/JasperFx/marten/blob/master/src/EventSourcingTests/Projections/MultiStreamProjections/CustomGroupers/grouping_examples_for_unknown_ids.cs#L128-L133' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_external-account-link-lookup-registration' title='Start of snippet'>anchor</a></sup>
+<sup><a href='https://github.com/JasperFx/marten/blob/master/src/EventSourcingTests/Projections/MultiStreamProjections/CustomGroupers/grouping_examples_for_unknown_ids.cs#L129-L134' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_external-account-link-lookup-registration' title='Start of snippet'>anchor</a></sup>
 <!-- endSnippet -->
 
 ### Pattern 2, keep the linked single stream ids on the projected document, then query by containment
 
-Use this when the number of linked ids per aggregate stays small.
+::: danger
+**Not recommended.** This pattern is racy under the async projection lifecycle.
 
-The idea is:
+If a link event (for example `CustomerLinkedToExternalAccount`) and a usage event
+(for example `ShippingLabelCreated`) land in the **same** `SaveChangesAsync` batch,
+the custom grouper queries `CustomerBillingMetrics.LinkedExternalAccounts` before
+the link event has been applied to the aggregate in that batch cycle. The containment
+query returns nothing, the usage event is silently dropped, and no exception is raised.
 
-1. The projected document stores the list of linked external ids
-2. The custom grouper finds the owning document by querying that list, then assigns events to that document id
+This is the same failure mode the general warning in [Custom Grouper](#custom-grouper)
+describes: *"If your grouping logic requires you to access the aggregate view itself,
+ViewProjection will not function correctly."* Pattern 2 violates that rule by querying
+the projection being built.
 
-::: warning
-Keep the linked id list bounded. If it can grow without limit, prefer Pattern 1 with a dedicated lookup document or table.
+If you must keep this shape (because you genuinely need the bounded linked-id list
+on the projected document), the grouper has to be coded defensively:
+
+1. Scan the current batch's `IEnumerable<IEvent>` for in-flight link events and seed
+   an in-memory lookup from those first.
+2. Then query the projected document (or a dedicated lookup) to cover links committed
+   by an earlier batch.
+3. Keep a grouper-instance or tenant-scoped cache of resolved links to avoid repeating
+   the DB lookup across every daemon cycle.
+
+That is essentially [Pattern 4](#pattern-4-batch-aware-grouper-with-in-memory-lookup-plus-db-fallback)
+— so prefer Pattern 4 outright.
 :::
+
+Use this pattern only when all three of the following hold:
+
+- The number of linked ids per aggregate stays small.
+- The link event is guaranteed to precede the first usage event by at least one
+  async daemon batch cycle (the link is "committed before usage").
+- You cannot use Pattern 1 or Pattern 4.
 
 #### Example
 
@@ -591,8 +615,142 @@ public class CustomerBillingProjection: MultiStreamProjection<CustomerBillingMet
         => view.ShippingLabels++;
 }
 ```
-<sup><a href='https://github.com/JasperFx/marten/blob/master/src/EventSourcingTests/Projections/MultiStreamProjections/CustomGroupers/grouping_examples_for_unknown_ids.cs#L140-L199' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_external-account-link-id-list-grouper' title='Start of snippet'>anchor</a></sup>
+<sup><a href='https://github.com/JasperFx/marten/blob/master/src/EventSourcingTests/Projections/MultiStreamProjections/CustomGroupers/grouping_examples_for_unknown_ids.cs#L141-L200' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_external-account-link-id-list-grouper' title='Start of snippet'>anchor</a></sup>
 <!-- endSnippet -->
+
+### Pattern 4, batch-aware grouper with in-memory lookup plus DB fallback
+
+Use this as the general-purpose fix for the same-batch race that breaks Pattern 2
+and is only accidentally avoided by Pattern 1. It is the recommended shape whenever
+link events and usage events can appear in a single `SaveChangesAsync` batch.
+
+The idea is:
+
+1. The grouper scans the current batch's `IEnumerable<IEvent>` for in-flight link
+   events first, seeding an in-memory map from external id to aggregate id.
+2. For any usage events whose external id is not in the map, the grouper queries
+   a dedicated lookup document (the same one Pattern 1 uses) to pick up links
+   committed by an earlier batch.
+3. A grouper-instance cache (a `ConcurrentDictionary`, or equivalent) avoids
+   repeating the DB lookup for external ids that have already been resolved.
+
+Step 1 is what makes the pattern safe under same-batch ordering: by the time the
+DB is consulted, any links sharing the batch have already been recorded in the
+in-memory map.
+
+#### Example
+
+Events and the inline lookup projection are identical to Pattern 1 (`CustomerRegistered`,
+`CustomerLinkedToExternalAccount`, `ShippingLabelCreated`, plus `ExternalAccountLink` /
+`ExternalAccountLinkProjection`). Only the grouper and its registration differ:
+
+<!-- snippet: sample_batch-aware-grouper -->
+<a id='snippet-sample_batch-aware-grouper'></a>
+```cs
+public class CustomerBillingMetrics
+{
+    public Guid Id { get; set; }
+    public int ShippingLabels { get; set; }
+}
+
+public class ExternalAccountLink
+{
+    public required string Id { get; set; }
+    public required Guid CustomerId { get; set; }
+}
+
+public class ExternalAccountLinkProjection: SingleStreamProjection<ExternalAccountLink, string>
+{
+    public void Apply(CustomerLinkedToExternalAccount e, ExternalAccountLink link)
+    {
+        link.Id = e.ExternalAccountId;
+        link.CustomerId = e.CustomerId;
+    }
+}
+
+/// <summary>
+/// Batch-aware grouper: consults in-batch link events first, then falls back to
+/// a DB lookup for any external ids still unresolved. Maintains a small
+/// grouper-instance cache to avoid repeated DB round-trips across daemon cycles.
+/// </summary>
+public class BatchAwareExternalAccountGrouper: IAggregateGrouper<Guid>
+{
+    private readonly ConcurrentDictionary<string, Guid> _cache = new();
+
+    public async Task Group(IQuerySession session, IEnumerable<IEvent> events, IEventGrouping<Guid> grouping)
+    {
+        var materialized = events as IReadOnlyCollection<IEvent> ?? events.ToList();
+
+        var labelEvents = materialized.OfType<IEvent<ShippingLabelCreated>>().ToList();
+        if (labelEvents.Count == 0) return;
+
+        // 1) Pick up any link events that share THIS batch.
+        foreach (var linkEvent in materialized.OfType<IEvent<CustomerLinkedToExternalAccount>>())
+        {
+            _cache[linkEvent.Data.ExternalAccountId] = linkEvent.Data.CustomerId;
+        }
+
+        // 2) For any external ids still unresolved, query the lookup table.
+        var unresolved = labelEvents
+            .Select(x => x.Data.ExternalAccountId)
+            .Distinct()
+            .Where(id => !_cache.ContainsKey(id))
+            .ToList();
+
+        if (unresolved.Count > 0)
+        {
+            var links = await session.Query<ExternalAccountLink>()
+                .Where(x => unresolved.Contains(x.Id))
+                .Select(x => new { x.Id, x.CustomerId })
+                .ToListAsync();
+
+            foreach (var link in links)
+            {
+                _cache[link.Id] = link.CustomerId;
+            }
+        }
+
+        // 3) Route each usage event to the matching customer id.
+        foreach (var e in labelEvents)
+        {
+            if (_cache.TryGetValue(e.Data.ExternalAccountId, out var customerId))
+            {
+                grouping.AddEvent(customerId, e);
+            }
+        }
+    }
+}
+
+public class CustomerBillingProjection: MultiStreamProjection<CustomerBillingMetrics, Guid>
+{
+    public CustomerBillingProjection()
+    {
+        Identity<CustomerRegistered>(e => e.CustomerId);
+        CustomGrouping(new BatchAwareExternalAccountGrouper());
+    }
+
+    public CustomerBillingMetrics Create(CustomerRegistered e) => new() { Id = e.CustomerId };
+
+    public void Apply(CustomerBillingMetrics view, ShippingLabelCreated _) => view.ShippingLabels++;
+}
+```
+<sup><a href='https://github.com/JasperFx/marten/blob/master/src/EventSourcingTests/Projections/MultiStreamProjections/CustomGroupers/grouping_examples_for_unknown_ids.cs#L220-L309' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_batch-aware-grouper' title='Start of snippet'>anchor</a></sup>
+<!-- endSnippet -->
+
+Register the lookup projection inline and the multi-stream projection async, exactly
+as in Pattern 1:
+
+```cs
+opts.Projections.Add<ExternalAccountLinkProjection>(ProjectionLifecycle.Inline);
+opts.Projections.Add<CustomerBillingProjection>(ProjectionLifecycle.Async);
+```
+
+::: tip
+The grouper-instance cache is safe because `IAggregateGrouper<TId>` is kept alive
+for the lifetime of the projection registration. It will, however, grow without
+bound in long-running processes if every external id is unique. Either add an LRU
+eviction policy, or reset the cache periodically, if that matters for your workload.
+:::
 
 ### Pattern 3, emit a derived event that contains the group key, using live aggregation plus the aggregate handler workflow
 
@@ -620,7 +778,7 @@ public record ShipmentCompleted;
 
 public record ShipmentBilled(Guid CustomerId, Guid ShipmentId, int UniqueItems);
 ```
-<sup><a href='https://github.com/JasperFx/marten/blob/master/src/EventSourcingTests/Projections/MultiStreamProjections/CustomGroupers/grouping_examples_for_unknown_ids.cs#L204-L218' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_shipment-events' title='Start of snippet'>anchor</a></sup>
+<sup><a href='https://github.com/JasperFx/marten/blob/master/src/EventSourcingTests/Projections/MultiStreamProjections/CustomGroupers/grouping_examples_for_unknown_ids.cs#L314-L328' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_shipment-events' title='Start of snippet'>anchor</a></sup>
 <!-- endSnippet -->
 
 Live aggregate state:
@@ -642,7 +800,7 @@ public class Shipment
     public void Apply(ItemScanned e) => Items.Add(e.ItemId);
 }
 ```
-<sup><a href='https://github.com/JasperFx/marten/blob/master/src/EventSourcingTests/Projections/MultiStreamProjections/CustomGroupers/grouping_examples_for_unknown_ids.cs#L220-L236' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_shipment' title='Start of snippet'>anchor</a></sup>
+<sup><a href='https://github.com/JasperFx/marten/blob/master/src/EventSourcingTests/Projections/MultiStreamProjections/CustomGroupers/grouping_examples_for_unknown_ids.cs#L330-L346' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_shipment' title='Start of snippet'>anchor</a></sup>
 <!-- endSnippet -->
 
 Derived event that is projection friendly (includes `CustomerId` again):
@@ -652,7 +810,7 @@ Derived event that is projection friendly (includes `CustomerId` again):
 ```cs
 public record ShipmentBilled(Guid CustomerId, Guid ShipmentId, int UniqueItems);
 ```
-<sup><a href='https://github.com/JasperFx/marten/blob/master/src/EventSourcingTests/Projections/MultiStreamProjections/CustomGroupers/grouping_examples_for_unknown_ids.cs#L212-L216' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_shipment-events-billed' title='Start of snippet'>anchor</a></sup>
+<sup><a href='https://github.com/JasperFx/marten/blob/master/src/EventSourcingTests/Projections/MultiStreamProjections/CustomGroupers/grouping_examples_for_unknown_ids.cs#L322-L326' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_shipment-events-billed' title='Start of snippet'>anchor</a></sup>
 <!-- endSnippet -->
 
 Command endpoint using the aggregate handler workflow, Wolverine loads the aggregate for you, you return the event, Wolverine appends it to the same stream:
@@ -699,7 +857,7 @@ public class CustomerBillingProjection: MultiStreamProjection<CustomerBillingMet
     }
 }
 ```
-<sup><a href='https://github.com/JasperFx/marten/blob/master/src/EventSourcingTests/Projections/MultiStreamProjections/CustomGroupers/grouping_examples_for_unknown_ids.cs#L238-L264' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_shipment-events-multi-stream-projection' title='Start of snippet'>anchor</a></sup>
+<sup><a href='https://github.com/JasperFx/marten/blob/master/src/EventSourcingTests/Projections/MultiStreamProjections/CustomGroupers/grouping_examples_for_unknown_ids.cs#L348-L374' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_shipment-events-multi-stream-projection' title='Start of snippet'>anchor</a></sup>
 <!-- endSnippet -->
 
 ::: tip
@@ -756,7 +914,7 @@ opts.Events.EnableGlobalProjectionsForConjoinedTenancy = true;
 The `ViewProjection` also provides the ability to "fan out" child events from a parent event into the segment of events being used to
 create an aggregated view. As an example, a `Travel` event we use in Marten testing contains a list of `Movement` objects:
 
-<!-- snippet: sample_Travel_Movements -->
+<!-- snippet: sample_travel_movements -->
 <a id='snippet-sample_travel_movements'></a>
 ```cs
 public IList<Movement> Movements { get; set; } = new List<Movement>();
@@ -958,3 +1116,159 @@ Event = monthlyAllocation.Key.Source.WithData(
 <!-- endSnippet -->
 
 Read also more in the [Event transformations, a tool to keep our processes loosely coupled](https://event-driven.io/en/event_transformations_and_loosely_coupling/?utm_source=marten_docs).
+
+## Time-Based Segmentation: Monthly Activity per Account
+
+A common real-world pattern is segmenting a single stream's events by time period — monthly
+reports, daily summaries, billing periods, etc. Multi-stream projections handle this naturally
+by routing events to documents with a **composite identity key** that combines the stream ID
+with a time bucket.
+
+This example builds a `MonthlyAccountActivity` read model that summarizes deposits, withdrawals,
+and fees per account per calendar month. Each document's ID is `"{accountId}:{yyyy-MM}"`:
+
+### Events
+
+<!-- snippet: sample_monthly_account_activity_events -->
+<a id='snippet-sample_monthly_account_activity_events'></a>
+```cs
+public record AccountOpened(string AccountName);
+public record DepositRecorded(decimal Amount);
+public record WithdrawalRecorded(decimal Amount);
+public record FeeCharged(decimal Amount, string Reason);
+```
+<sup><a href='https://github.com/JasperFx/marten/blob/master/src/EventSourcingTests/Projections/MultiStreamProjections/monthly_account_activity_projection.cs#L16-L23' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_monthly_account_activity_events' title='Start of snippet'>anchor</a></sup>
+<!-- endSnippet -->
+
+### Read Model
+
+<!-- snippet: sample_monthly_account_activity_document -->
+<a id='snippet-sample_monthly_account_activity_document'></a>
+```cs
+/// <summary>
+/// Read model that summarizes account activity for a single calendar month.
+/// The Id is a composite key: "{streamId}:{yyyy-MM}"
+/// </summary>
+public class MonthlyAccountActivity
+{
+    public string Id { get; set; } = "";
+    public Guid AccountId { get; set; }
+    public int Year { get; set; }
+    public int Month { get; set; }
+    public int TransactionCount { get; set; }
+    public decimal TotalDeposits { get; set; }
+    public decimal TotalWithdrawals { get; set; }
+    public decimal TotalFees { get; set; }
+}
+```
+<sup><a href='https://github.com/JasperFx/marten/blob/master/src/EventSourcingTests/Projections/MultiStreamProjections/monthly_account_activity_projection.cs#L25-L43' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_monthly_account_activity_document' title='Start of snippet'>anchor</a></sup>
+<!-- endSnippet -->
+
+### Projection
+
+The key technique is `Identity<IEvent<T>>()` which gives you access to both the stream ID
+(`e.StreamId`) and event metadata (`e.Timestamp`) to build the composite key:
+
+<!-- snippet: sample_monthly_account_activity_projection -->
+<a id='snippet-sample_monthly_account_activity_projection'></a>
+```cs
+public class MonthlyAccountActivityProjection : MultiStreamProjection<MonthlyAccountActivity, string>
+{
+    public MonthlyAccountActivityProjection()
+    {
+        // Route each event to a document keyed by "{accountId}:{yyyy-MM}"
+        // using the stream ID (account) + event timestamp (month)
+        Identity<IEvent<DepositRecorded>>(e =>
+            $"{e.StreamId}:{e.Timestamp:yyyy-MM}");
+
+        Identity<IEvent<WithdrawalRecorded>>(e =>
+            $"{e.StreamId}:{e.Timestamp:yyyy-MM}");
+
+        Identity<IEvent<FeeCharged>>(e =>
+            $"{e.StreamId}:{e.Timestamp:yyyy-MM}");
+    }
+
+    public MonthlyAccountActivity Create(IEvent<DepositRecorded> e)
+    {
+        var (accountId, year, month) = ParseKey(e);
+        return new MonthlyAccountActivity
+        {
+            AccountId = accountId, Year = year, Month = month,
+            TransactionCount = 1, TotalDeposits = e.Data.Amount
+        };
+    }
+
+    public void Apply(IEvent<DepositRecorded> e, MonthlyAccountActivity activity)
+    {
+        activity.TransactionCount++;
+        activity.TotalDeposits += e.Data.Amount;
+    }
+
+    public MonthlyAccountActivity Create(IEvent<WithdrawalRecorded> e)
+    {
+        var (accountId, year, month) = ParseKey(e);
+        return new MonthlyAccountActivity
+        {
+            AccountId = accountId, Year = year, Month = month,
+            TransactionCount = 1, TotalWithdrawals = e.Data.Amount
+        };
+    }
+
+    public void Apply(IEvent<WithdrawalRecorded> e, MonthlyAccountActivity activity)
+    {
+        activity.TransactionCount++;
+        activity.TotalWithdrawals += e.Data.Amount;
+    }
+
+    public MonthlyAccountActivity Create(IEvent<FeeCharged> e)
+    {
+        var (accountId, year, month) = ParseKey(e);
+        return new MonthlyAccountActivity
+        {
+            AccountId = accountId, Year = year, Month = month,
+            TransactionCount = 1, TotalFees = e.Data.Amount
+        };
+    }
+
+    public void Apply(IEvent<FeeCharged> e, MonthlyAccountActivity activity)
+    {
+        activity.TransactionCount++;
+        activity.TotalFees += e.Data.Amount;
+    }
+
+    private static (Guid AccountId, int Year, int Month) ParseKey(IEvent e)
+    {
+        return (e.StreamId, e.Timestamp.Year, e.Timestamp.Month);
+    }
+}
+```
+<sup><a href='https://github.com/JasperFx/marten/blob/master/src/EventSourcingTests/Projections/MultiStreamProjections/monthly_account_activity_projection.cs#L45-L117' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_monthly_account_activity_projection' title='Start of snippet'>anchor</a></sup>
+<!-- endSnippet -->
+
+### Registration
+
+```cs
+builder.Services.AddMarten(opts =>
+{
+    // Register as Async for production use with the daemon
+    opts.Projections.Add<MonthlyAccountActivityProjection>(ProjectionLifecycle.Async);
+});
+```
+
+### How It Works
+
+When events are appended to an account stream, the projection routes each event to a
+document based on `{streamId}:{yyyy-MM}`. If three deposits happen in January and two
+in February, you get two separate `MonthlyAccountActivity` documents:
+
+- `"{accountId}:2026-01"` — 3 transactions, January totals
+- `"{accountId}:2026-02"` — 2 transactions, February totals
+
+This pattern works because `Identity<IEvent<T>>()` gives you access to:
+
+- **`e.StreamId`** — the account's stream identity (Guid)
+- **`e.Timestamp`** — the event's timestamp for time bucketing
+- **`e.Data`** — the event payload for any additional routing logic
+
+You can adapt this pattern for any time granularity (daily, weekly, quarterly) by
+changing the format string in the identity expression.

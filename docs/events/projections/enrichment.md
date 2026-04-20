@@ -1,8 +1,17 @@
 # Enriching Events <Badge type="tip" text="8.11" />
 
 ::: tip
-We added a newer recipe for more declarative and efficient event enrichment in Marten 8.18. 
+We added a newer recipe for more declarative and efficient event enrichment in Marten 8.18.
 Please see the later examples in the page too.
+:::
+
+::: warning
+Event enrichment via `EnrichEventsAsync` is designed for **read model / query model** projections
+processed by the async daemon or inline during `SaveChangesAsync`. It is **not** called during
+`FetchForWriting()` or `FetchLatest()` with Live aggregations. If your aggregate is used as a
+write model in CQRS command handlers, avoid depending on enriched event data in your
+`Create`/`Apply`/`Evolve` methods. Instead, resolve reference data directly in your command
+handler before appending events, or include the resolved data in the event payload itself.
 :::
 
 So here’s a common scenario when building a system using Event Sourcing with Marten:
@@ -91,7 +100,7 @@ Instead of the *N+1 Query Problem* you could easily get from doing the `User` lo
 That's where the `EnrichEventsAsync()` template method can come into play on your aggregation projections
 as a way of wringing more performance and scalability out of your Marten usage! Let’s build a single stream projection for the `UserTask` aggregate type shown up above that batches the `User` lookup:
 
-<!-- snippet: snippet_UserTaskProjection -->
+<!-- snippet: snippet_usertaskprojection -->
 <a id='snippet-snippet_usertaskprojection'></a>
 ```cs
 public class UserTaskProjection: SingleStreamProjection<UserTask, Guid>
@@ -180,7 +189,7 @@ to be relatively static, so that information is just stored as a Marten document
 
 The first event in a `ProviderShift` stream might be this immutable type:
 
-<!-- snippet: sample_ProviderJoined -->
+<!-- snippet: sample_providerjoined -->
 <a id='snippet-sample_providerjoined'></a>
 ```cs
 public record ProviderJoined(Guid BoardId, Guid ProviderId);
@@ -191,7 +200,7 @@ public record ProviderJoined(Guid BoardId, Guid ProviderId);
 In the projection for these streams to a `ProviderShift` document we'd really like to read some of the basic `Provider` information
 like this:
 
-<!-- snippet: sample_ProviderShift -->
+<!-- snippet: sample_providershift -->
 <a id='snippet-sample_providershift'></a>
 ```cs
 public class ProviderShift(Guid boardId, Provider provider)
@@ -227,7 +236,7 @@ we look up all the `Provider` documents that are referenced by `ProviderJoined` 
 that the async daemon is processing, and try to swap out the `ProviderJoined` events in each slice for a copy
 of this enhanced event type:
 
-<!-- snippet: sample_EnhancedProviderJoined -->
+<!-- snippet: sample_enhancedproviderjoined -->
 <a id='snippet-sample_enhancedproviderjoined'></a>
 ```cs
 public record EnhancedProviderJoined(Guid BoardId, Provider Provider);
@@ -238,7 +247,7 @@ public record EnhancedProviderJoined(Guid BoardId, Provider Provider);
 Here's the enrichment code that looks up a `Provider` for each `ProviderJoined` event, and swaps in a fatter
 `ProviderJoinedEnhanced` event:
 
-<!-- snippet: sample_ProviderShift_EnrichEventsAsync -->
+<!-- snippet: sample_providershift_enricheventsasync -->
 <a id='snippet-sample_providershift_enricheventsasync'></a>
 ```cs
 public override async Task EnrichEventsAsync(SliceGroup<ProviderShift, Guid> group, IQuerySession querySession, CancellationToken cancellation)
@@ -273,7 +282,7 @@ public override async Task EnrichEventsAsync(SliceGroup<ProviderShift, Guid> gro
 
 In the projection itself, we work on the enhanced event type like this:
 
-<!-- snippet: sample_ProviderShift_Evolve -->
+<!-- snippet: sample_providershift_evolve -->
 <a id='snippet-sample_providershift_evolve'></a>
 ```cs
 public override ProviderShift Evolve(ProviderShift snapshot, Guid id, IEvent e)
@@ -351,7 +360,7 @@ for matching `Provider` or `Board` documents.
 
 In the `Evolve()` method for the projection, we can look for those "synthetic events" like this:
 
-<!-- snippet: sample_AppointmentDetails_Evolve -->
+<!-- snippet: sample_appointmentdetails_evolve -->
 <a id='snippet-sample_appointmentdetails_evolve'></a>
 ```cs
 public override AppointmentDetails Evolve(AppointmentDetails snapshot, Guid id, IEvent e)
