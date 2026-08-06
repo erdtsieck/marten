@@ -19,6 +19,41 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Marten.Events;
 
+/// <summary>
+///     #5195: the polling loops in <see cref="TestingExtensions" /> used a fixed delay — 250ms between
+///     progression checks, 100ms elsewhere — so a projection that caught up in single-digit milliseconds
+///     still cost the caller a full quantum, and a test that scripts several batch boundaries paid it once
+///     per boundary. Starting short and backing off to the original interval keeps the same ceiling, and
+///     therefore the same polling pressure on a database that really is still working, while taking the
+///     common "it is already done" case off the clock.
+/// </summary>
+internal sealed class PollingBackoff
+{
+    private static readonly TimeSpan _initial = 5.Milliseconds();
+
+    private readonly TimeSpan _ceiling;
+    private TimeSpan _current;
+
+    public PollingBackoff(TimeSpan ceiling)
+    {
+        _ceiling = ceiling < _initial ? _initial : ceiling;
+        _current = _initial;
+    }
+
+    /// <summary>
+    ///     The delay this call will wait for. Exposed for testing the progression without a clock.
+    /// </summary>
+    public TimeSpan Next()
+    {
+        var delay = _current;
+        var doubled = _current + _current;
+        _current = doubled > _ceiling ? _ceiling : doubled;
+        return delay;
+    }
+
+    public Task DelayAsync(CancellationToken token) => Task.Delay(Next(), token);
+}
+
 public static class TestingExtensions
 {
     /// <summary>
@@ -145,6 +180,9 @@ public static class TestingExtensions
                 break;
             }
 
+            // Deliberately NOT backed off. This loop does not ask "are we there yet" — it snapshots the
+            // bar that everything below must reach. Polling it faster captures a LOWER sequence number
+            // while events are still being appended, so the wait would be satisfied against less data.
             await Task.Delay(100.Milliseconds(), cancellationSource.Token).ConfigureAwait(false);
         } while (true);
 
@@ -268,6 +306,7 @@ public static class TestingExtensions
         }
 
         IReadOnlyList<ShardState> projections = [];
+        var backoff = new PollingBackoff(250.Milliseconds());
         try
         {
             do
@@ -278,7 +317,7 @@ public static class TestingExtensions
                     break;
                 }
 
-                await Task.Delay(250.Milliseconds(), cancellationSource.Token).ConfigureAwait(false);
+                await backoff.DelayAsync(cancellationSource.Token).ConfigureAwait(false);
             } while (true);
         }
         catch (TaskCanceledException)
@@ -357,6 +396,8 @@ public static class TestingExtensions
         using var cancellationSource = CancellationTokenSource.CreateLinkedTokenSource(token);
         cancellationSource.CancelAfter(timeout);
 
+        var backoff = new PollingBackoff(100.Milliseconds());
+
         try
         {
             while (true)
@@ -369,7 +410,7 @@ public static class TestingExtensions
 
                 if (tracking.isComplete(highWaterMark)) return;
 
-                await Task.Delay(100.Milliseconds(), cancellationSource.Token).ConfigureAwait(false);
+                await backoff.DelayAsync(cancellationSource.Token).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)
